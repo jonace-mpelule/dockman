@@ -15,7 +15,7 @@ Dockman is a lightweight Go utility designed to streamline your Docker workflow 
 You can install Dockman quickly using the following command:
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/jonace-mpelule/dockman/v1.0.1/scripts/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/jonace-mpelule/dockman/main/scripts/install.sh | sh
 ```
 
 ### From Source
