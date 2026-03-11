@@ -42,7 +42,11 @@ guard-clean:
 
 set-version: guard-version guard-clean
 	@echo "$(VERSION)" > VERSION
+	@if [ -f scripts/install.sh ]; then \
+		sed -E "s/^VERSION=.*/VERSION=\\\"$(VERSION)\\\"/" scripts/install.sh > scripts/install.sh.tmp && mv scripts/install.sh.tmp scripts/install.sh; \
+	fi
 	@git add VERSION
+	@if [ -f scripts/install.sh ]; then git add scripts/install.sh; fi
 	@if git diff --cached --quiet; then echo "VERSION unchanged; aborting."; exit 1; fi
 	@git commit -m "chore: release $(VERSION)"
 	@echo "Tagging release $(VERSION)"
