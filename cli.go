@@ -1,0 +1,103 @@
+package main
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+var version = "dev"
+
+type GlobalOptions struct {
+	ConfigPath string
+	Profile    string
+	DryRun     bool
+	Help       bool
+	Version    bool
+}
+
+func splitArgs(input string) []string {
+	if strings.TrimSpace(input) == "" {
+		return []string{}
+	}
+	return strings.Fields(input)
+}
+
+func hasPortFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-p" || arg == "--publish" {
+			return true
+		}
+		if strings.HasPrefix(arg, "-p") || strings.HasPrefix(arg, "--publish=") {
+			return true
+		}
+	}
+	return false
+}
+
+func shellEscape(arg string) string {
+	if arg == "" {
+		return "\"\""
+	}
+	if strings.ContainsAny(arg, " \t\n\"'\\$") {
+		return strconv.Quote(arg)
+	}
+	return arg
+}
+
+func formatCommand(args []string) string {
+	escaped := make([]string, 0, len(args))
+	for _, arg := range args {
+		escaped = append(escaped, shellEscape(arg))
+	}
+	return strings.Join(escaped, " ")
+}
+
+func extractGlobalOptions(args []string) (GlobalOptions, []string) {
+	options := GlobalOptions{}
+	filtered := make([]string, 0, len(args))
+
+	for _, arg := range args {
+		if after, ok := strings.CutPrefix(arg, "--config="); ok {
+			options.ConfigPath = after
+			continue
+		}
+		if after, ok := strings.CutPrefix(arg, "--profile="); ok {
+			options.Profile = after
+			continue
+		}
+		if arg == "--dry-run" {
+			options.DryRun = true
+			continue
+		}
+		if arg == "--help" || arg == "-h" {
+			options.Help = true
+			continue
+		}
+		if arg == "--version" {
+			options.Version = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+
+	return options, filtered
+}
+
+func printHelp() {
+	fmt.Print(`Dockman - Docker run/build helper with env injection
+
+Usage:
+  dockman [run] [--tc="..."] [--env="..."] [--no-port] [--dry-run] [--profile=NAME] [--config=PATH]
+  dockman build [--tag="..."] [--context="..."] [--file="..."] [--args="..."] [--dry-run] [--profile=NAME] [--config=PATH]
+  dockman init [--profile=NAME] [--config=PATH]
+  dockman --help
+  dockman --version
+
+Notes:
+  - If no args are provided, Dockman uses dockman.json (or dockman.<profile>.json).
+  - Use --profile to switch config and default env file (.env.<profile>).
+  - Use --no-port to disable automatic PORT mapping.
+  - Use --dry-run to print the docker command without executing.
+`)
+}

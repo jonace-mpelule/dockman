@@ -1,149 +1,160 @@
 package main
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
-	"path/filepath"
+	"strconv"
 	"strings"
 )
 
-func parseEnv(path string) (map[string]string, error) {
-	file, err := os.Open(path)
-
-	if err != nil {
-		return nil, err
-	}
-
-	defer file.Close()
-
-	env := make(map[string]string)
-
-	scanner := bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		// Skip Empty Lines
-		if line == " " || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		parts := strings.SplitN(line, "=", 2)
-
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		env[key] = value
-	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	return env, nil
-
-}
-
 func main() {
-	// Check if Docker exists
-	cmd := exec.Command("docker", "--version")
-	if err := cmd.Run(); err != nil {
-		fmt.Printf("Docker not installed or not in PATH")
-		os.Exit(1)
-	}
-
 	args := os.Args[1:]
 
-	if len(args) == 0 {
-		log.Fatal("No arguments provided")
+	mode := "run"
+	if len(args) > 0 {
+		switch args[0] {
+		case "init", "build", "run", "help", "version":
+			mode = args[0]
+			args = args[1:]
+		}
+	}
+
+	options, args := extractGlobalOptions(args)
+	if options.Help || mode == "help" {
+		printHelp()
+		return
+	}
+	if options.Version || mode == "version" {
+		fmt.Printf("dockman %s\n", version)
 		return
 	}
 
-	result := make(map[string]string)
-
-	wanted := map[string]string{
-		"--tc=":  "trail",
-		"--env=": "envFile",
+	configPath := options.ConfigPath
+	if configPath == "" {
+		configPath = configPathForProfile(options.Profile)
 	}
 
-	for _, arg := range args {
-		for prefix, key := range wanted {
-			if after, ok := strings.CutPrefix(arg, prefix); ok {
-				result[key] = after
+	switch mode {
+	case "init":
+		if err := writeDefaultConfig(configPath, options.Profile); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Printf("Created %s\n", configPath)
+		return
+	case "build":
+		if !options.DryRun {
+			ensureDocker()
+		}
+
+		cfg := Config{}
+		if loadedCfg, err := loadConfig(configPath); err == nil {
+			cfg = loadedCfg
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Fatal(err)
+		}
+
+		overrides := BuildOverrides{}
+		for _, arg := range args {
+			if after, ok := strings.CutPrefix(arg, "--tag="); ok {
+				overrides.Tag = after
+				continue
+			}
+			if after, ok := strings.CutPrefix(arg, "--context="); ok {
+				overrides.Context = after
+				continue
+			}
+			if after, ok := strings.CutPrefix(arg, "--file="); ok {
+				overrides.File = after
+				continue
+			}
+			if after, ok := strings.CutPrefix(arg, "--args="); ok {
+				overrides.Args = after
+				continue
 			}
 		}
-	}
 
-	if len(result["trail"]) == 0 {
-		fmt.Println("No trail provided")
-		os.Exit(1)
-	}
-
-	_envPath := result["envFile"]
-	if _envPath == "" {
-		_envPath = ".env"
-	}
-
-	path := filepath.Join(_envPath)
-
-	_, err := os.ReadFile(path)
-
-	if err != nil {
-		fmt.Printf("Error Opening Env File: %v \n", path)
-		os.Exit(1)
-	}
-
-	envContent, err := parseEnv(path)
-
-	if err != nil {
-		fmt.Printf("Error Opening Env File: %v \n", path)
-		os.Exit(1)
-	}
-
-	envArgs := []string{}
-
-	for k, v := range envContent {
-		envArgs = append(envArgs, "-e", fmt.Sprintf("%s=%s", k, v))
-	}
-
-	commands := []string{
-		"run",
-	}
-
-	trail := strings.SplitN(result["trail"], " ", 200)
-
-	// Prepend Port From Env if -p is not provided
-	if !strings.Contains(result["trail"], "-p") {
-		if _, ok := envContent["PORT"]; ok {
-			envArgs = append([]string{
-				"-p", fmt.Sprintf("%s:%s", envContent["PORT"], envContent["PORT"]),
-			}, envArgs...)
+		if err := buildDocker(cfg, overrides, options.DryRun); err != nil {
+			log.Fatal(err)
+		}
+		return
+	case "run":
+		if !options.DryRun {
+			ensureDocker()
 		}
 
+		cfg := Config{}
+		cfgLoaded := false
+		if loadedCfg, err := loadConfig(configPath); err == nil {
+			cfg = loadedCfg
+			cfgLoaded = true
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Fatal(err)
+		}
+
+		trail := ""
+		envFile := ""
+		passThrough := []string{}
+		for _, arg := range args {
+			if after, ok := strings.CutPrefix(arg, "--tc="); ok {
+				trail = after
+				continue
+			}
+			if after, ok := strings.CutPrefix(arg, "--env="); ok {
+				envFile = after
+				continue
+			}
+			if arg == "--no-port" {
+				autoPort := false
+				cfg.AutoPort = &autoPort
+				continue
+			}
+			if after, ok := strings.CutPrefix(arg, "--auto-port="); ok {
+				parsed, err := strconv.ParseBool(after)
+				if err != nil {
+					log.Fatalf("invalid --auto-port value: %s", after)
+				}
+				cfg.AutoPort = &parsed
+				continue
+			}
+			passThrough = append(passThrough, arg)
+		}
+
+		if trail == "" {
+			if len(passThrough) > 0 {
+				trail = strings.Join(passThrough, " ")
+			} else if cfgLoaded {
+				trail = buildRunTrail(cfg)
+			}
+		}
+
+		if trail == "" {
+			log.Fatal("No trail provided")
+		}
+
+		if envFile == "" {
+			if cfgLoaded && cfg.EnvFile != "" {
+				envFile = cfg.EnvFile
+			} else {
+				if options.Profile != "" {
+					envFile = fmt.Sprintf(".env.%s", options.Profile)
+				} else {
+					envFile = defaultEnvFile
+				}
+			}
+		}
+
+		autoPort := true
+		if cfg.AutoPort != nil {
+			autoPort = *cfg.AutoPort
+		}
+
+		if err := runDocker(trail, envFile, autoPort, options.DryRun); err != nil {
+			log.Fatal(err)
+		}
+		return
+	default:
+		log.Fatal("Unknown command")
 	}
-
-	commands = append(commands, envArgs...)
-	commands = append(commands, trail...)
-
-	dockerCommand := exec.Command("docker", commands...)
-
-	dockerCommand.Stdin = os.Stdin
-	dockerCommand.Stdout = os.Stdout
-	dockerCommand.Stderr = os.Stderr
-
-	fmt.Printf("\n 🐳 Dockman Injected %v Variables From %v \n\n", len(envContent), path)
-
-	if err := dockerCommand.Run(); err != nil {
-		panic(err)
-	}
-
-	dockerCommand.Wait()
-
 }
