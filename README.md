@@ -84,6 +84,20 @@ Override build options:
 dockman build --tag="my-image" --context="." --file="Dockerfile" --target="builder" --platform="linux/amd64" --no-cache --pull
 ```
 
+### Build Overrides
+These flags override the matching values from `dockman.json` for a single build:
+
+```bash
+dockman build \
+  --tag="my-image:local" \
+  --context="." \
+  --file="Dockerfile" \
+  --target="builder" \
+  --platform="linux/amd64" \
+  --no-cache \
+  --pull
+```
+
 ### Profiles
 Use a profile to switch configuration and env file defaults:
 
@@ -174,6 +188,198 @@ Notes:
 - `${VAR}` interpolation is resolved from the host environment and fails before Docker runs if a referenced variable is missing.
 - `run.env` and `run.env_file` are kept separate from build inputs.
 
+### Build Inputs Explained
+Dockman separates build-time inputs into four different buckets. This matters because they are not interchangeable.
+
+1. `build.args`
+Use this for normal Docker build arguments such as versions, commit SHAs, feature flags, or `NODE_ENV`.
+
+```json
+{
+  "build": {
+    "args": {
+      "NODE_ENV": "production",
+      "GIT_SHA": "${GIT_SHA}",
+      "APP_VERSION": "${APP_VERSION}"
+    }
+  }
+}
+```
+
+```bash
+export GIT_SHA=$(git rev-parse --short HEAD)
+export APP_VERSION=v1.2.3
+dockman build
+```
+
+Dockerfile example:
+
+```dockerfile
+ARG NODE_ENV=development
+ARG GIT_SHA=dev
+ARG APP_VERSION=local
+
+RUN echo "building $APP_VERSION from $GIT_SHA in $NODE_ENV mode"
+```
+
+Use `build.args` for non-secret values. Even if dry-run masks them, build args are still not the right place for tokens or passwords.
+
+2. `build.env`
+Use this for environment variables that the `docker build` process itself should see on the host side. These are not mounted into the image as BuildKit secrets.
+
+```json
+{
+  "build": {
+    "env": {
+      "DOCKER_CLI_HINTS": "false",
+      "BUILDKIT_PROGRESS": "plain"
+    }
+  }
+}
+```
+
+This is useful when the Docker CLI or BuildKit behavior depends on environment variables.
+
+3. `build.secrets`
+Use this for actual secrets. The value itself should live outside `dockman.json`, either in a host environment variable or in a local file.
+
+Environment variable secret:
+
+```json
+{
+  "build": {
+    "secrets": {
+      "github_token": {
+        "env": "GITHUB_TOKEN"
+      }
+    }
+  }
+}
+```
+
+```bash
+export GITHUB_TOKEN=your_token_here
+dockman build
+```
+
+File secret:
+
+```json
+{
+  "build": {
+    "secrets": {
+      "npmrc": {
+        "file": ".npmrc"
+      }
+    }
+  }
+}
+```
+
+```bash
+dockman build
+```
+
+Dockerfile usage:
+
+```dockerfile
+RUN --mount=type=secret,id=github_token \
+    sh -c 'test -f /run/secrets/github_token'
+
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
+    npm ci
+```
+
+Important rules:
+- Do not put secret values directly inside `dockman.json`.
+- Do not use `build.args` for passwords, tokens, or private keys.
+- If you use `{ "env": "GITHUB_TOKEN" }`, the user must export `GITHUB_TOKEN` before running `dockman build`.
+- If you use `{ "file": ".npmrc" }`, the file must exist locally before running `dockman build`.
+- Dockman will fail before Docker starts if a required secret env var or file is missing.
+
+4. `build.ssh`
+Use this when the build needs SSH agent forwarding, for example when cloning a private Git repository during image build.
+
+```json
+{
+  "build": {
+    "ssh": ["default"]
+  }
+}
+```
+
+Dockerfile usage:
+
+```dockerfile
+RUN --mount=type=ssh git clone git@github.com:your-org/private-repo.git
+```
+
+This requires an SSH agent to already be running on the host.
+
+### Full Build Example
+This example shows most build features together:
+
+```json
+{
+  "image": "my-app",
+  "run": {
+    "env_file": ".env",
+    "env": {
+      "APP_ENV": "development"
+    },
+    "auto_port": true,
+    "args": "--rm"
+  },
+  "build": {
+    "context": ".",
+    "dockerfile": "Dockerfile",
+    "tag": "my-app",
+    "buildkit": true,
+    "env": {
+      "BUILDKIT_PROGRESS": "plain"
+    },
+    "args": {
+      "NODE_ENV": "production",
+      "GIT_SHA": "${GIT_SHA}"
+    },
+    "secrets": {
+      "github_token": {
+        "env": "GITHUB_TOKEN"
+      },
+      "npmrc": {
+        "file": ".npmrc"
+      }
+    },
+    "ssh": ["default"],
+    "target": "builder",
+    "platform": "linux/amd64",
+    "cache_from": ["type=registry,ref=my-app:cache"],
+    "cache_to": ["type=inline"],
+    "pull": true,
+    "no_cache": false,
+    "extra_args": "--progress=plain"
+  }
+}
+```
+
+```bash
+export GIT_SHA=$(git rev-parse --short HEAD)
+export GITHUB_TOKEN=your_token_here
+dockman build --dry-run
+dockman build
+```
+
+### Runtime Env Versus Build Inputs
+Runtime env and build inputs are separate on purpose:
+
+- `run.env_file` and `run.env` are for `docker run`.
+- `build.args` is for `docker build --build-arg`.
+- `build.env` is for the host environment of the `docker build` process.
+- `build.secrets` is for BuildKit-mounted secrets.
+- `build.ssh` is for SSH forwarding during build.
+
+If a value is only needed when the container starts, keep it under `run.*`. If it is only needed while the image is being built, keep it under `build.*`.
+
 ### Help and Version
 ```bash
 dockman --help
@@ -220,6 +426,10 @@ Notes:
 - `run.args` is appended before the image name. If you prefer, you can use `{image}` in `run.args` to place it manually.
 - `run.auto_port` controls automatic `-p PORT:PORT` injection (based on `PORT` in the resolved runtime env).
 - Build defaults are used by `dockman build` unless overridden.
+- `build.args` is for non-secret Docker build arguments.
+- `build.secrets` is for sensitive values used during image build.
+- `build.env` is for environment variables on the host side of `docker build`.
+- `build.ssh` forwards SSH agent access into the build.
 - `schema_version` is written automatically and used by `dockman doctor` to keep configs on the current spec.
 - Older top-level fields such as `env_file`, `auto_port`, `run_args`, and string-valued `build.args` are still accepted for compatibility.
 
