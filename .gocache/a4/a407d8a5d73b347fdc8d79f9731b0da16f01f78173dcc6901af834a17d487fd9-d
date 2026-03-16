@@ -1,0 +1,20 @@
+# test log
+getenv TMPDIR
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T/TestParseEnvAdvanced2553753473/001/.env
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T/TestParseEnvAdvanced2553753473/001/.env
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T
+getenv TMPDIR
+stat /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T/TestWriteDefaultConfig2244781418/001/dockman.dev.json
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T/TestWriteDefaultConfig2244781418/001/dockman.dev.json
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T/TestWriteDefaultConfig2244781418/001/dockman.dev.json
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T
+getenv TMPDIR
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T/TestRunDockerDryRun463967078/001/.env
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T/TestRunDockerDryRun463967078/001/.env
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T/TestRunDockerDryRun463967078/001/.env
+open /var/folders/ph/fspk4qmj43d4s_6sp2fpwbk40000gn/T
+getenv GITHUB_TOKEN
+getenv GITHUB_TOKEN
+getenv GITHUB_TOKEN
+getenv GITHUB_TOKEN
+getenv MISSING_TOKEN

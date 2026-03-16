@@ -15,7 +15,7 @@ func main() {
 	mode := "run"
 	if len(args) > 0 {
 		switch args[0] {
-		case "init", "build", "run", "help", "version":
+		case "init", "build", "run", "doctor", "help", "version":
 			mode = args[0]
 			args = args[1:]
 		}
@@ -42,6 +42,11 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Printf("Created %s\n", configPath)
+		return
+	case "doctor":
+		if err := doctorConfig(configPath, options.DryRun); err != nil {
+			log.Fatal(err)
+		}
 		return
 	case "build":
 		if !options.DryRun {
@@ -71,6 +76,30 @@ func main() {
 			}
 			if after, ok := strings.CutPrefix(arg, "--args="); ok {
 				overrides.Args = after
+				continue
+			}
+			if after, ok := strings.CutPrefix(arg, "--target="); ok {
+				overrides.Target = after
+				continue
+			}
+			if after, ok := strings.CutPrefix(arg, "--platform="); ok {
+				overrides.Platform = after
+				continue
+			}
+			if arg == "--no-cache" {
+				overrides.NoCache = boolPtr(true)
+				continue
+			}
+			if arg == "--pull" {
+				overrides.Pull = boolPtr(true)
+				continue
+			}
+			if after, ok := strings.CutPrefix(arg, "--buildkit="); ok {
+				parsed, err := strconv.ParseBool(after)
+				if err != nil {
+					log.Fatalf("invalid --buildkit value: %s", after)
+				}
+				overrides.BuildKit = &parsed
 				continue
 			}
 		}
@@ -107,7 +136,7 @@ func main() {
 			}
 			if arg == "--no-port" {
 				autoPort := false
-				cfg.AutoPort = &autoPort
+				cfg.Run.AutoPort = &autoPort
 				continue
 			}
 			if after, ok := strings.CutPrefix(arg, "--auto-port="); ok {
@@ -115,7 +144,7 @@ func main() {
 				if err != nil {
 					log.Fatalf("invalid --auto-port value: %s", after)
 				}
-				cfg.AutoPort = &parsed
+				cfg.Run.AutoPort = &parsed
 				continue
 			}
 			passThrough = append(passThrough, arg)
@@ -134,8 +163,8 @@ func main() {
 		}
 
 		if envFile == "" {
-			if cfgLoaded && cfg.EnvFile != "" {
-				envFile = cfg.EnvFile
+			if cfgLoaded && runEnvFile(cfg) != "" {
+				envFile = runEnvFile(cfg)
 			} else {
 				if options.Profile != "" {
 					envFile = fmt.Sprintf(".env.%s", options.Profile)
@@ -146,11 +175,11 @@ func main() {
 		}
 
 		autoPort := true
-		if cfg.AutoPort != nil {
-			autoPort = *cfg.AutoPort
+		if runAutoPort(cfg) != nil {
+			autoPort = *runAutoPort(cfg)
 		}
 
-		if err := runDocker(trail, envFile, autoPort, options.DryRun); err != nil {
+		if err := runDocker(trail, envFile, cfg.Run.Env, autoPort, options.DryRun); err != nil {
 			log.Fatal(err)
 		}
 		return

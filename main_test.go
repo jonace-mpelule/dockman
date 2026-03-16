@@ -10,12 +10,19 @@ import (
 )
 
 type testConfig struct {
-	Image   string `json:"image"`
-	EnvFile string `json:"env_file"`
-	Build   struct {
+	SchemaVersion int    `json:"schema_version"`
+	Image         string `json:"image"`
+	Run           struct {
+		EnvFile  string `json:"env_file"`
+		Args     string `json:"args"`
+		AutoPort *bool  `json:"auto_port"`
+	} `json:"run"`
+	Build struct {
 		Context    string `json:"context"`
 		Dockerfile string `json:"dockerfile"`
 		Tag        string `json:"tag"`
+		BuildKit   *bool  `json:"buildkit"`
+		ExtraArgs  string `json:"extra_args"`
 	} `json:"build"`
 }
 
@@ -182,14 +189,23 @@ func TestWriteDefaultConfig(t *testing.T) {
 		t.Fatalf("unmarshal config: %v", err)
 	}
 
-	if cfg.EnvFile != ".env.dev" {
-		t.Fatalf("unexpected env_file: %q", cfg.EnvFile)
+	if cfg.Run.EnvFile != ".env.dev" {
+		t.Fatalf("unexpected env_file: %q", cfg.Run.EnvFile)
 	}
 	if cfg.Image != "my-image" {
 		t.Fatalf("unexpected image: %q", cfg.Image)
 	}
 	if cfg.Build.Context != "." || cfg.Build.Dockerfile != "Dockerfile" || cfg.Build.Tag != "my-image" {
 		t.Fatalf("unexpected build config: %+v", cfg.Build)
+	}
+	if cfg.Build.BuildKit == nil || !*cfg.Build.BuildKit {
+		t.Fatalf("expected buildkit enabled by default")
+	}
+	if cfg.Run.Args != "--rm" {
+		t.Fatalf("unexpected run args: %q", cfg.Run.Args)
+	}
+	if cfg.SchemaVersion != currentConfigVersion {
+		t.Fatalf("unexpected schema version: %d", cfg.SchemaVersion)
 	}
 }
 
@@ -198,7 +214,7 @@ func TestRunDockerDryRun(t *testing.T) {
 	path := writeTempFile(t, tmp, ".env", "PORT=1234\nFOO=bar\n")
 
 	out := captureStdout(t, func() {
-		err := runDocker("my-image", path, true, true)
+		err := runDocker("my-image", path, nil, true, true)
 		if err != nil {
 			t.Fatalf("runDocker: %v", err)
 		}
@@ -219,7 +235,7 @@ func TestBuildDockerDryRun(t *testing.T) {
 			Context:    ".",
 			Dockerfile: "Dockerfile",
 			Tag:        "my-image",
-			Args:       "--no-cache",
+			LegacyArgs: "--no-cache",
 		},
 	}
 
@@ -238,5 +254,235 @@ func TestBuildDockerDryRun(t *testing.T) {
 	}
 	if !strings.Contains(out, "-f Dockerfile") {
 		t.Fatalf("expected dockerfile in output, got %q", out)
+	}
+}
+
+func TestBuildConfigLegacyArgsString(t *testing.T) {
+	var cfg Config
+	data := []byte(`{
+	  "build": {
+	    "context": ".",
+	    "dockerfile": "Dockerfile",
+	    "tag": "my-image",
+	    "args": "--no-cache --pull"
+	  }
+	}`)
+
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+
+	if cfg.Build.LegacyArgs != "--no-cache --pull" {
+		t.Fatalf("unexpected legacy args: %q", cfg.Build.LegacyArgs)
+	}
+}
+
+func TestBuildDockerBuildKitSecretsDryRun(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "secret-token")
+	cfg := Config{
+		Image: "my-image",
+		Build: BuildConfig{
+			Context:    ".",
+			Dockerfile: "Dockerfile",
+			Tag:        "my-image",
+			Env: map[string]string{
+				"GIT_AUTH_TOKEN": "${GITHUB_TOKEN}",
+			},
+			Args: map[string]string{
+				"GITHUB_TOKEN": "${GITHUB_TOKEN}",
+			},
+			Secrets: map[string]BuildSecret{
+				"github_token": {Env: "GITHUB_TOKEN"},
+			},
+			SSH:       []string{"default"},
+			Target:    "builder",
+			Platform:  "linux/amd64",
+			NoCache:   boolPtr(true),
+			Pull:      boolPtr(true),
+			CacheFrom: []string{"type=registry,ref=example/app:cache"},
+			CacheTo:   []string{"type=inline"},
+		},
+	}
+
+	out := captureStdout(t, func() {
+		err := buildDocker(cfg, BuildOverrides{}, true)
+		if err != nil {
+			t.Fatalf("buildDocker: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "DOCKER_BUILDKIT=1") {
+		t.Fatalf("expected buildkit env in output, got %q", out)
+	}
+	if !strings.Contains(out, "--secret id=github_token,env=GITHUB_TOKEN") {
+		t.Fatalf("expected secret flag in output, got %q", out)
+	}
+	if !strings.Contains(out, "--ssh default") {
+		t.Fatalf("expected ssh flag in output, got %q", out)
+	}
+	if !strings.Contains(out, "--target builder") || !strings.Contains(out, "--platform linux/amd64") {
+		t.Fatalf("expected target and platform in output, got %q", out)
+	}
+	if !strings.Contains(out, "--cache-from type=registry,ref=example/app:cache") || !strings.Contains(out, "--cache-to type=inline") {
+		t.Fatalf("expected cache flags in output, got %q", out)
+	}
+	if !strings.Contains(out, "GIT_AUTH_TOKEN=<redacted>") || !strings.Contains(out, "GITHUB_TOKEN=<redacted>") {
+		t.Fatalf("expected redacted values in output, got %q", out)
+	}
+	if strings.Contains(out, "secret-token") {
+		t.Fatalf("expected secret value redacted, got %q", out)
+	}
+}
+
+func TestBuildDockerMissingInterpolatedVariable(t *testing.T) {
+	cfg := Config{
+		Build: BuildConfig{
+			Args: map[string]string{
+				"NPM_TOKEN": "${MISSING_TOKEN}",
+			},
+		},
+	}
+
+	err := buildDocker(cfg, BuildOverrides{}, true)
+	if err == nil {
+		t.Fatalf("expected missing variable error")
+	}
+	if !strings.Contains(err.Error(), "build.args.NPM_TOKEN") || !strings.Contains(err.Error(), "MISSING_TOKEN") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNormalizeConfigMovesLegacyFields(t *testing.T) {
+	autoPort := true
+	cfg := normalizeConfig(Config{
+		Image:    "app",
+		EnvFile:  ".env",
+		AutoPort: &autoPort,
+		RunArgs:  "--rm",
+		Build: BuildConfig{
+			LegacyArgs: "--pull",
+		},
+	})
+
+	if cfg.SchemaVersion != currentConfigVersion {
+		t.Fatalf("unexpected schema version: %d", cfg.SchemaVersion)
+	}
+	if cfg.Run.EnvFile != ".env" {
+		t.Fatalf("unexpected run env file: %q", cfg.Run.EnvFile)
+	}
+	if cfg.Run.AutoPort == nil || !*cfg.Run.AutoPort {
+		t.Fatalf("expected run auto port true")
+	}
+	if cfg.Run.Args != "--rm" {
+		t.Fatalf("unexpected run args: %q", cfg.Run.Args)
+	}
+	if cfg.Build.ExtraArgs != "--pull" {
+		t.Fatalf("unexpected build extra args: %q", cfg.Build.ExtraArgs)
+	}
+	if cfg.Build.BuildKit == nil || !*cfg.Build.BuildKit {
+		t.Fatalf("expected buildkit enabled")
+	}
+	if cfg.EnvFile != "" || cfg.AutoPort != nil || cfg.RunArgs != "" {
+		t.Fatalf("expected legacy fields cleared: %+v", cfg)
+	}
+}
+
+func TestDoctorConfigUpdatesLegacyFile(t *testing.T) {
+	tmp := t.TempDir()
+	path := writeTempFile(t, tmp, "dockman.json", `{
+  "image": "legacy-image",
+  "env_file": ".env.dev",
+  "auto_port": true,
+  "run_args": "--rm",
+  "build": {
+    "context": ".",
+    "dockerfile": "Dockerfile",
+    "tag": "legacy-image",
+    "args": "--pull"
+  }
+}
+`)
+
+	if err := doctorConfig(path, false); err != nil {
+		t.Fatalf("doctorConfig: %v", err)
+	}
+
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !strings.Contains(string(backup), `"env_file": ".env.dev"`) {
+		t.Fatalf("expected backup to contain original config")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated config: %v", err)
+	}
+
+	var cfg testConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal updated config: %v", err)
+	}
+
+	if cfg.SchemaVersion != currentConfigVersion {
+		t.Fatalf("unexpected schema version: %d", cfg.SchemaVersion)
+	}
+	if cfg.Run.EnvFile != ".env.dev" || cfg.Run.Args != "--rm" {
+		t.Fatalf("unexpected run config: %+v", cfg.Run)
+	}
+	if cfg.Run.AutoPort == nil || !*cfg.Run.AutoPort {
+		t.Fatalf("expected auto_port migrated")
+	}
+	if cfg.Build.ExtraArgs != "--pull" {
+		t.Fatalf("expected legacy build args migrated to extra_args, got %q", cfg.Build.ExtraArgs)
+	}
+	if strings.Contains(string(data), `"env_file": ".env.dev"`) && !strings.Contains(string(data), `"run"`) {
+		t.Fatalf("expected canonical run config in updated file")
+	}
+}
+
+func TestDoctorConfigDryRunLeavesFileUntouched(t *testing.T) {
+	tmp := t.TempDir()
+	original := `{"image":"legacy","env_file":".env"}`
+	path := writeTempFile(t, tmp, "dockman.json", original)
+
+	if err := doctorConfig(path, true); err != nil {
+		t.Fatalf("doctorConfig dry run: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("expected dry run to leave file untouched, got %q", string(data))
+	}
+	if _, err := os.Stat(path + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("expected no backup on dry run, err=%v", err)
+	}
+}
+
+func TestDoctorConfigRejectsInvalidSecrets(t *testing.T) {
+	tmp := t.TempDir()
+	path := writeTempFile(t, tmp, "dockman.json", `{
+  "image": "bad",
+  "build": {
+    "secrets": {
+      "token": {
+        "env": "TOKEN",
+        "file": ".token"
+      }
+    }
+  }
+}
+`)
+
+	err := doctorConfig(path, false)
+	if err == nil {
+		t.Fatalf("expected invalid secret error")
+	}
+	if !strings.Contains(err.Error(), "build.secrets.token") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

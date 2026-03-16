@@ -89,7 +89,8 @@ func printHelp() {
 
 Usage:
   dockman [run] [--tc="..."] [--env="..."] [--no-port] [--dry-run] [--profile=NAME] [--config=PATH]
-  dockman build [--tag="..."] [--context="..."] [--file="..."] [--args="..."] [--dry-run] [--profile=NAME] [--config=PATH]
+  dockman build [--tag="..."] [--context="..."] [--file="..."] [--target="..."] [--platform="..."] [--args="..."] [--no-cache] [--pull] [--buildkit=true|false] [--dry-run] [--profile=NAME] [--config=PATH]
+  dockman doctor [--dry-run] [--profile=NAME] [--config=PATH]
   dockman init [--profile=NAME] [--config=PATH]
   dockman --help
   dockman --version
@@ -99,5 +100,7 @@ Notes:
   - Use --profile to switch config and default env file (.env.<profile>).
   - Use --no-port to disable automatic PORT mapping.
   - Use --dry-run to print the docker command without executing.
+  - BuildKit is enabled by default for dockman build.
+  - doctor validates and rewrites older config files to the current schema.
 `)
 }
