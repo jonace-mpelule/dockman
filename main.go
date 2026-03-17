@@ -15,7 +15,7 @@ func main() {
 	mode := "run"
 	if len(args) > 0 {
 		switch args[0] {
-		case "init", "build", "run", "doctor", "help", "version":
+		case "init", "build", "run", "start", "stop", "restart", "upgrade", "doctor", "help", "version":
 			mode = args[0]
 			args = args[1:]
 		}
@@ -24,6 +24,12 @@ func main() {
 	options, args := extractGlobalOptions(args)
 	if options.Help || mode == "help" {
 		printHelp()
+		return
+	}
+	if options.Update {
+		if err := selfUpdate(options.DryRun); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 	if options.Version || mode == "version" {
@@ -108,6 +114,35 @@ func main() {
 			log.Fatal(err)
 		}
 		return
+	case "start", "stop", "restart", "upgrade":
+		if !options.DryRun {
+			ensureDocker()
+		}
+
+		cfg := Config{}
+		if loadedCfg, err := loadConfig(configPath); err == nil {
+			cfg = loadedCfg
+		} else if !errors.Is(err, os.ErrNotExist) {
+			log.Fatal(err)
+		}
+
+		imageOverride := ""
+		for _, arg := range args {
+			if after, ok := strings.CutPrefix(arg, "--image="); ok {
+				imageOverride = after
+				continue
+			}
+		}
+
+		opts := managedRuntimeOptions{
+			DryRun:     options.DryRun,
+			AllowNoEnv: options.AllowNoEnv,
+			Image:      imageOverride,
+		}
+		if err := runManagedLifecycle(mode, cfg, opts); err != nil {
+			log.Fatal(err)
+		}
+		return
 	case "run":
 		if !options.DryRun {
 			ensureDocker()
@@ -179,7 +214,7 @@ func main() {
 			autoPort = *runAutoPort(cfg)
 		}
 
-		if err := runDocker(trail, envFile, cfg.Run.Env, autoPort, options.DryRun); err != nil {
+		if err := runDocker(trail, envFile, cfg.Run.Env, autoPort, options.AllowNoEnv, options.DryRun); err != nil {
 			log.Fatal(err)
 		}
 		return

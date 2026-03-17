@@ -9,6 +9,7 @@ Dockman is a lightweight Go utility designed to streamline Docker run and build 
 - **Simple Syntax**: Wraps the standard Docker CLI, making it feel natural to use.
 - **Lightweight**: Written in Go with zero external dependencies.
 - **Config-Driven**: Optional `dockman.json` for zero-arg runs.
+- **Managed Lifecycle**: Start, stop, restart, and upgrade named apps from config.
 - **Structured Build Support**: Build args, BuildKit secrets, SSH forwarding, cache flags, target/platform selection, and raw pass-through args.
 - **Profiles**: Switch configs and env files with `--profile=dev`.
 - **Dry Runs**: Print Docker commands without executing.
@@ -21,6 +22,12 @@ You can install Dockman quickly using the following command:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/jonace-mpelule/dockman/main/scripts/install.sh | sh
+```
+
+To update an existing Dockman install to the latest published release, run:
+
+```bash
+dockman --update
 ```
 
 ### From Source
@@ -40,6 +47,26 @@ If you have Go installed, you can build from source:
    sudo mv dockman /usr/local/bin/
    ```
 
+### GitHub Actions CI/CD
+The repository includes a GitHub Actions workflow that:
+
+- runs tests on Blacksmith runners
+- builds and publishes multi-arch container images to GHCR
+- supports private Go modules during both `go test` and Docker image builds
+
+Set these repository or organization secrets before enabling the workflow:
+
+- `PRIVATE_GO_MODULES_TOKEN`: a fine-grained PAT with read access to the private dependency repositories
+- `GOPRIVATE_PATTERN`: your Go private module pattern, for example `github.com/your-org/*`
+
+The workflow publishes images to:
+
+```bash
+ghcr.io/<owner>/dockman:main
+ghcr.io/<owner>/dockman:latest
+ghcr.io/<owner>/dockman:v1.2.3
+```
+
 ## 📖 Usage
 
 Dockman acts as a proxy for the `docker run` command.
@@ -58,6 +85,12 @@ You can specify a custom environment file using the `--env=` flag:
 dockman --env=".env.prod" --tc="my-image"
 ```
 
+If you want Dockman to continue when the resolved env file does not exist, add:
+
+```bash
+dockman --allow-no-env --tc="my-image"
+```
+
 ### Config-First Workflow (Zero-Arg Run)
 Initialize a config file:
 
@@ -70,6 +103,30 @@ This creates `dockman.json` (editable), then you can just run:
 ```bash
 dockman
 ```
+
+### Managed Lifecycle
+Managed lifecycle commands use `run.name` from config and keep ownership of the container set for that app:
+
+```bash
+dockman start
+dockman stop
+dockman restart
+```
+
+If `run.zero_downtime` is enabled, `dockman restart` starts a new revision, waits for it to become healthy, then cuts traffic over through a managed proxy container.
+
+### Zero-Downtime Upgrade
+Use `dockman upgrade` in CI/CD when you want the server to pull a fresh image from Docker Hub, GHCR, or another registry supported by Docker, then replace the running app without downtime:
+
+```bash
+dockman upgrade
+dockman upgrade --image="ghcr.io/example/my-app:sha-abcdef"
+```
+
+`dockman upgrade` always runs `docker pull` first and relies on the host Docker client for registry authentication.
+
+### Updating Dockman Itself
+`dockman --update` updates the Dockman binary itself by re-running the published install script from GitHub. This is separate from `dockman upgrade`, which updates your managed application container.
 
 ### Build Command
 Build using config defaults:
@@ -115,6 +172,8 @@ Print the docker command without executing:
 
 ```bash
 dockman --dry-run
+dockman restart --dry-run
+dockman upgrade --dry-run
 dockman build --dry-run
 dockman doctor --dry-run
 ```
@@ -152,7 +211,10 @@ Example config:
       "APP_ENV": "development"
     },
     "auto_port": true,
-    "args": "--rm"
+    "args": "--rm",
+    "name": "my-app",
+    "zero_downtime": true,
+    "readiness": "healthcheck"
   },
   "build": {
     "context": ".",
@@ -328,7 +390,10 @@ This example shows most build features together:
       "APP_ENV": "development"
     },
     "auto_port": true,
-    "args": "--rm"
+    "args": "--rm",
+    "name": "my-app",
+    "zero_downtime": true,
+    "readiness": "healthcheck"
   },
   "build": {
     "context": ".",
@@ -410,7 +475,10 @@ Dockman will use `dockman.json` automatically when you run `dockman` with no arg
     "env_file": ".env",
     "env": {},
     "auto_port": true,
-    "args": "--rm"
+    "args": "--rm",
+    "name": "my-app",
+    "zero_downtime": false,
+    "readiness": "healthcheck"
   },
   "build": {
     "context": ".",
@@ -425,6 +493,9 @@ Notes:
 - `image` is the default image name (used for `dockman` or `dockman run`).
 - `run.args` is appended before the image name. If you prefer, you can use `{image}` in `run.args` to place it manually.
 - `run.auto_port` controls automatic `-p PORT:PORT` injection (based on `PORT` in the resolved runtime env).
+- `run.name` is required for `dockman start`, `stop`, `restart`, and `upgrade`.
+- `run.zero_downtime` enables managed blue/green replacement through a Dockman proxy container.
+- `run.readiness` is currently `healthcheck` only, which means the image must define a Docker `HEALTHCHECK` for zero-downtime restart or upgrade.
 - Build defaults are used by `dockman build` unless overridden.
 - `build.args` is for non-secret Docker build arguments.
 - `build.secrets` is for sensitive values used during image build.

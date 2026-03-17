@@ -37,10 +37,13 @@ type BuildSecret struct {
 }
 
 type RunConfig struct {
-	Env      map[string]string `json:"env"`
-	EnvFile  string            `json:"env_file"`
-	Args     string            `json:"args"`
-	AutoPort *bool             `json:"auto_port"`
+	Env          map[string]string `json:"env"`
+	EnvFile      string            `json:"env_file"`
+	Args         string            `json:"args"`
+	AutoPort     *bool             `json:"auto_port"`
+	Name         string            `json:"name"`
+	ZeroDowntime *bool             `json:"zero_downtime,omitempty"`
+	Readiness    string            `json:"readiness,omitempty"`
 }
 
 type Config struct {
@@ -116,9 +119,12 @@ func writeDefaultConfig(path string, profile string) error {
 		SchemaVersion: currentConfigVersion,
 		Image:         "my-image",
 		Run: RunConfig{
-			EnvFile:  envFile,
-			AutoPort: &defaultAutoPort,
-			Args:     "--rm",
+			EnvFile:      envFile,
+			AutoPort:     &defaultAutoPort,
+			Args:         "--rm",
+			Name:         "my-app",
+			ZeroDowntime: boolPtr(false),
+			Readiness:    "healthcheck",
 		},
 		Build: BuildConfig{
 			Context:    ".",
@@ -222,6 +228,12 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.Build.BuildKit == nil {
 		cfg.Build.BuildKit = boolPtr(true)
+	}
+	if cfg.Run.ZeroDowntime == nil {
+		cfg.Run.ZeroDowntime = boolPtr(false)
+	}
+	if strings.TrimSpace(cfg.Run.Readiness) == "" {
+		cfg.Run.Readiness = "healthcheck"
 	}
 
 	cfg.EnvFile = ""

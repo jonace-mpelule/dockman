@@ -13,9 +13,12 @@ type testConfig struct {
 	SchemaVersion int    `json:"schema_version"`
 	Image         string `json:"image"`
 	Run           struct {
-		EnvFile  string `json:"env_file"`
-		Args     string `json:"args"`
-		AutoPort *bool  `json:"auto_port"`
+		EnvFile      string `json:"env_file"`
+		Args         string `json:"args"`
+		AutoPort     *bool  `json:"auto_port"`
+		Name         string `json:"name"`
+		ZeroDowntime *bool  `json:"zero_downtime"`
+		Readiness    string `json:"readiness"`
 	} `json:"run"`
 	Build struct {
 		Context    string `json:"context"`
@@ -142,6 +145,8 @@ func TestExtractGlobalOptions(t *testing.T) {
 		"--config=cfg.json",
 		"--profile=dev",
 		"--dry-run",
+		"--allow-no-env",
+		"--update",
 		"--help",
 		"--version",
 		"run",
@@ -157,9 +162,38 @@ func TestExtractGlobalOptions(t *testing.T) {
 	if !options.DryRun || !options.Help || !options.Version {
 		t.Fatalf("expected dry-run/help/version enabled")
 	}
+	if !options.AllowNoEnv {
+		t.Fatalf("expected allow-no-env enabled")
+	}
+	if !options.Update {
+		t.Fatalf("expected update enabled")
+	}
 
 	if strings.Join(filtered, " ") != "run --tc=img" {
 		t.Fatalf("unexpected filtered args: %v", filtered)
+	}
+}
+
+func TestSelfUpdateDryRun(t *testing.T) {
+	oldRunner := updateCommandRunner
+	defer func() {
+		updateCommandRunner = oldRunner
+	}()
+
+	called := false
+	updateCommandRunner = func(dryRun bool) error {
+		called = true
+		if !dryRun {
+			t.Fatalf("expected dry-run update")
+		}
+		return nil
+	}
+
+	if err := selfUpdate(true); err != nil {
+		t.Fatalf("selfUpdate: %v", err)
+	}
+	if !called {
+		t.Fatalf("expected update runner called")
 	}
 }
 
@@ -204,6 +238,15 @@ func TestWriteDefaultConfig(t *testing.T) {
 	if cfg.Run.Args != "--rm" {
 		t.Fatalf("unexpected run args: %q", cfg.Run.Args)
 	}
+	if cfg.Run.Name != "my-app" {
+		t.Fatalf("unexpected managed name: %q", cfg.Run.Name)
+	}
+	if cfg.Run.ZeroDowntime == nil || *cfg.Run.ZeroDowntime {
+		t.Fatalf("expected zero downtime disabled by default")
+	}
+	if cfg.Run.Readiness != "healthcheck" {
+		t.Fatalf("unexpected readiness: %q", cfg.Run.Readiness)
+	}
 	if cfg.SchemaVersion != currentConfigVersion {
 		t.Fatalf("unexpected schema version: %d", cfg.SchemaVersion)
 	}
@@ -214,7 +257,7 @@ func TestRunDockerDryRun(t *testing.T) {
 	path := writeTempFile(t, tmp, ".env", "PORT=1234\nFOO=bar\n")
 
 	out := captureStdout(t, func() {
-		err := runDocker("my-image", path, nil, true, true)
+		err := runDocker("my-image", path, nil, true, false, true)
 		if err != nil {
 			t.Fatalf("runDocker: %v", err)
 		}
@@ -225,6 +268,22 @@ func TestRunDockerDryRun(t *testing.T) {
 	}
 	if !strings.Contains(out, "-p 1234:1234") {
 		t.Fatalf("expected port mapping in output, got %q", out)
+	}
+}
+
+func TestRunDockerAllowNoEnv(t *testing.T) {
+	out := captureStdout(t, func() {
+		err := runDocker("my-image", filepath.Join(t.TempDir(), ".env.missing"), map[string]string{"FOO": "bar"}, true, true, true)
+		if err != nil {
+			t.Fatalf("runDocker: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "FOO=<redacted>") {
+		t.Fatalf("expected inline env in output, got %q", out)
+	}
+	if strings.Contains(out, "error opening env file") {
+		t.Fatalf("expected missing env tolerated, got %q", out)
 	}
 }
 
@@ -382,8 +441,102 @@ func TestNormalizeConfigMovesLegacyFields(t *testing.T) {
 	if cfg.Build.BuildKit == nil || !*cfg.Build.BuildKit {
 		t.Fatalf("expected buildkit enabled")
 	}
+	if cfg.Run.ZeroDowntime == nil || *cfg.Run.ZeroDowntime {
+		t.Fatalf("expected zero downtime defaulted false")
+	}
+	if cfg.Run.Readiness != "healthcheck" {
+		t.Fatalf("expected readiness defaulted")
+	}
 	if cfg.EnvFile != "" || cfg.AutoPort != nil || cfg.RunArgs != "" {
 		t.Fatalf("expected legacy fields cleared: %+v", cfg)
+	}
+}
+
+func TestManagedStartDryRun(t *testing.T) {
+	cfg := Config{
+		Image: "my-image",
+		Run: RunConfig{
+			Name:     "app",
+			Args:     "--rm",
+			AutoPort: boolPtr(true),
+		},
+	}
+
+	out := captureStdout(t, func() {
+		err := runManagedLifecycle("start", cfg, managedRuntimeOptions{DryRun: true, AllowNoEnv: true})
+		if err != nil {
+			t.Fatalf("managed start dry run: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "docker run -d --name app") {
+		t.Fatalf("expected managed run command, got %q", out)
+	}
+}
+
+func TestManagedRestartZeroDowntimeDryRun(t *testing.T) {
+	cfg := Config{
+		Image: "my-image",
+		Run: RunConfig{
+			Name:         "app",
+			Args:         "--publish=127.0.0.1:8080:8080 --rm",
+			AutoPort:     boolPtr(true),
+			ZeroDowntime: boolPtr(true),
+			Readiness:    "healthcheck",
+		},
+	}
+
+	out := captureStdout(t, func() {
+		err := runManagedLifecycle("restart", cfg, managedRuntimeOptions{DryRun: true, AllowNoEnv: true})
+		if err != nil {
+			t.Fatalf("managed restart dry run: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "docker network create app-net") {
+		t.Fatalf("expected network create in output, got %q", out)
+	}
+	if !strings.Contains(out, "docker image inspect --format") {
+		t.Fatalf("expected healthcheck inspect in output, got %q", out)
+	}
+	if !strings.Contains(out, "docker exec app-proxy nginx -s reload") {
+		t.Fatalf("expected proxy reload in output, got %q", out)
+	}
+	if !strings.Contains(out, "127.0.0.1:8080:8080") {
+		t.Fatalf("expected publish spec preserved, got %q", out)
+	}
+}
+
+func TestManagedUpgradeDryRunUsesOverrideImage(t *testing.T) {
+	cfg := Config{
+		Image: "my-image:old",
+		Run: RunConfig{
+			Name:         "app",
+			AutoPort:     boolPtr(true),
+			ZeroDowntime: boolPtr(true),
+			Readiness:    "healthcheck",
+			Env: map[string]string{
+				"PORT": "8080",
+			},
+		},
+	}
+
+	out := captureStdout(t, func() {
+		err := runManagedLifecycle("upgrade", cfg, managedRuntimeOptions{
+			DryRun:     true,
+			AllowNoEnv: true,
+			Image:      "ghcr.io/example/app:new",
+		})
+		if err != nil {
+			t.Fatalf("managed upgrade dry run: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "docker pull ghcr.io/example/app:new") {
+		t.Fatalf("expected image pull in output, got %q", out)
+	}
+	if !strings.Contains(out, "ghcr.io/example/app:new") {
+		t.Fatalf("expected override image in output, got %q", out)
 	}
 }
 

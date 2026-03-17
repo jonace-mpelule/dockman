@@ -17,37 +17,14 @@ func ensureDocker() {
 	}
 }
 
-func runDocker(trail string, envPath string, inlineEnv map[string]string, autoPort bool, dryRun bool) error {
+func runDocker(trail string, envPath string, inlineEnv map[string]string, autoPort bool, allowNoEnv bool, dryRun bool) error {
 	if strings.TrimSpace(trail) == "" {
 		return fmt.Errorf("no run trail provided")
 	}
 
-	envContent := map[string]string{}
-	path := ""
-	if strings.TrimSpace(envPath) != "" {
-		resolvedPath, err := resolveStringField("run.env_file", envPath)
-		if err != nil {
-			return err
-		}
-		path = filepath.Join(resolvedPath)
-
-		if _, err := os.ReadFile(path); err != nil {
-			return fmt.Errorf("error opening env file: %v", path)
-		}
-
-		parsed, err := parseEnv(path)
-		if err != nil {
-			return fmt.Errorf("error opening env file: %v", path)
-		}
-		envContent = parsed
-	}
-
-	resolvedInlineEnv, err := resolveStringMap("run.env", inlineEnv, false)
+	envContent, path, err := loadRunEnv(envPath, inlineEnv, allowNoEnv)
 	if err != nil {
 		return err
-	}
-	for _, assignment := range resolvedInlineEnv {
-		envContent[assignment.Key] = assignment.Value
 	}
 
 	trailArgs := splitArgs(trail)
@@ -93,6 +70,42 @@ func runDocker(trail string, envPath string, inlineEnv map[string]string, autoPo
 	}
 
 	return nil
+}
+
+func loadRunEnv(envPath string, inlineEnv map[string]string, allowNoEnv bool) (map[string]string, string, error) {
+	envContent := map[string]string{}
+	path := ""
+	if strings.TrimSpace(envPath) != "" {
+		resolvedPath, err := resolveStringField("run.env_file", envPath)
+		if err != nil {
+			return nil, "", err
+		}
+		path = filepath.Join(resolvedPath)
+
+		if _, err := os.ReadFile(path); err != nil {
+			if allowNoEnv && os.IsNotExist(err) {
+				path = ""
+			} else {
+				return nil, "", fmt.Errorf("error opening env file: %v", path)
+			}
+		} else {
+			parsed, err := parseEnv(path)
+			if err != nil {
+				return nil, "", fmt.Errorf("error opening env file: %v", path)
+			}
+			envContent = parsed
+		}
+	}
+
+	resolvedInlineEnv, err := resolveStringMap("run.env", inlineEnv, false)
+	if err != nil {
+		return nil, "", err
+	}
+	for _, assignment := range resolvedInlineEnv {
+		envContent[assignment.Key] = assignment.Value
+	}
+
+	return envContent, path, nil
 }
 
 func buildDocker(cfg Config, overrides BuildOverrides, dryRun bool) error {
