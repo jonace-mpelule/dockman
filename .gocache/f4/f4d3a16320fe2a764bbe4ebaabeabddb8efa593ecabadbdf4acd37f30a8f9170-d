@@ -1,7 +1,0 @@
-./cli.go
-./config.go
-./docker.go
-./env.go
-./main.go
-./resolve.go
-./main_test.go
