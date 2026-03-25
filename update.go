@@ -10,11 +10,11 @@ const installScriptURL = "https://raw.githubusercontent.com/jonace-mpelule/dockm
 
 var updateCommandRunner = func(dryRun bool) error {
 	if dryRun {
-		fmt.Printf("Dry run: curl -fsSL %s | sh\n", installScriptURL)
+		fmt.Printf("Dry run: curl -fsSL %s | NONINTERACTIVE=1 sh\n", installScriptURL)
 		return nil
 	}
 
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL %s | sh", installScriptURL))
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL %s | NONINTERACTIVE=1 sh", installScriptURL))
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

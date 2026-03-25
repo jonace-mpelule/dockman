@@ -24,6 +24,15 @@ You can install Dockman quickly using the following command:
 curl -sSL https://raw.githubusercontent.com/jonace-mpelule/dockman/main/scripts/install.sh | sh
 ```
 
+The installer now prints a branded summary with the detected platform, target path, and release URL before downloading. In an interactive terminal it asks for confirmation; in scripts it stays non-interactive.
+
+Installer controls:
+
+```bash
+VERSION=v1.3.0 INSTALL_DIR="$HOME/.local/bin" NONINTERACTIVE=1 \
+curl -sSL https://raw.githubusercontent.com/jonace-mpelule/dockman/main/scripts/install.sh | sh
+```
+
 To update an existing Dockman install to the latest published release, run:
 
 ```bash
@@ -98,7 +107,21 @@ Initialize a config file:
 dockman init
 ```
 
-This creates `dockman.json` (editable), then you can just run:
+On a real terminal, `dockman init` opens an interactive wizard and ends with a review screen before writing `dockman.json`.
+By default, the generated image name, build tag, and managed app name start from the current directory name instead of generic placeholders.
+
+For scripts or CI, skip the wizard:
+
+```bash
+dockman init --plain
+dockman init --yes
+dockman init -y
+```
+
+- `--plain` preserves the old one-shot behavior and still refuses to overwrite an existing config.
+- `--yes` and `-y` write the default config non-interactively, which is useful when you want deterministic bootstrap behavior.
+
+After the config exists, you can just run:
 
 ```bash
 dockman
@@ -126,7 +149,7 @@ dockman upgrade --image="ghcr.io/example/my-app:sha-abcdef"
 `dockman upgrade` always runs `docker pull` first and relies on the host Docker client for registry authentication.
 
 ### Updating Dockman Itself
-`dockman --update` updates the Dockman binary itself by re-running the published install script from GitHub. This is separate from `dockman upgrade`, which updates your managed application container.
+`dockman --update` updates the Dockman binary itself by re-running the published install script from GitHub in non-interactive mode. This is separate from `dockman upgrade`, which updates your managed application container.
 
 ### Build Command
 Build using config defaults:
@@ -494,7 +517,9 @@ Notes:
 - `run.args` is appended before the image name. If you prefer, you can use `{image}` in `run.args` to place it manually.
 - `run.auto_port` controls automatic `-p PORT:PORT` injection (based on `PORT` in the resolved runtime env).
 - `run.name` is required for `dockman start`, `stop`, `restart`, and `upgrade`.
+- When `run.zero_downtime` is `false`, Dockman uses `run.name` as the actual Docker container name.
 - `run.zero_downtime` enables managed blue/green replacement through a Dockman proxy container.
+- When `run.zero_downtime` is `true`, Dockman keeps `run.name` as the stable app identity but uses revisioned container names internally during cutover.
 - `run.readiness` is currently `healthcheck` only, which means the image must define a Docker `HEALTHCHECK` for zero-downtime restart or upgrade.
 - Build defaults are used by `dockman build` unless overridden.
 - `build.args` is for non-secret Docker build arguments.

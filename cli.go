@@ -16,6 +16,8 @@ type GlobalOptions struct {
 	Update     bool
 	Version    bool
 	AllowNoEnv bool
+	InitPlain  bool
+	InitYes    bool
 }
 
 func splitArgs(input string) []string {
@@ -88,6 +90,14 @@ func extractGlobalOptions(args []string) (GlobalOptions, []string) {
 			options.AllowNoEnv = true
 			continue
 		}
+		if arg == "--plain" {
+			options.InitPlain = true
+			continue
+		}
+		if arg == "--yes" || arg == "-y" {
+			options.InitYes = true
+			continue
+		}
 		filtered = append(filtered, arg)
 	}
 
@@ -105,7 +115,7 @@ Usage:
   dockman upgrade [--image="..."] [--allow-no-env] [--dry-run] [--profile=NAME] [--config=PATH]
   dockman build [--tag="..."] [--context="..."] [--file="..."] [--target="..."] [--platform="..."] [--args="..."] [--no-cache] [--pull] [--buildkit=true|false] [--dry-run] [--profile=NAME] [--config=PATH]
   dockman doctor [--dry-run] [--profile=NAME] [--config=PATH]
-  dockman init [--profile=NAME] [--config=PATH]
+  dockman init [--plain] [--yes|-y] [--profile=NAME] [--config=PATH]
   dockman --help
   dockman --update
   dockman --version
@@ -117,8 +127,26 @@ Notes:
   - Use --no-port to disable automatic PORT mapping.
   - Use --dry-run to print the docker command without executing.
   - Use --update to reinstall the latest Dockman release from GitHub.
+  - dockman init opens an interactive wizard on TTYs by default.
+  - Use dockman init --plain to skip the wizard and fail if the config already exists.
+  - Use dockman init --yes (or -y) for non-interactive defaults generation.
   - start/stop/restart/upgrade require run.name in config for managed lifecycle mode.
   - BuildKit is enabled by default for dockman build.
   - doctor validates and rewrites older config files to the current schema.
 `)
+}
+
+func printVersion() {
+	const orange = "\033[38;5;214m"
+	const reset = "\033[0m"
+
+	fmt.Printf(``+orange+`  ____             __
+ / __ \____  _____/ /_____ ___  ____ _____
+/ / / / __ \/ ___/ //_/ _ `+"`"+`__ \/ __ `+"`"+`/ __ \
+/ /_/ / /_/ / /__/ ,< /  __/ / / /_/ / / / /
+\____/\____/\___/_/|_|\___/_/ /_/\__,_/_/ /_/`+reset+`
+
+Dockman
+Version  %s
+`, version)
 }

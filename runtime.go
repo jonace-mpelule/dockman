@@ -29,6 +29,7 @@ type managedRuntimeOptions struct {
 
 type managedRuntime struct {
 	Name            string
+	LegacyName      string
 	Image           string
 	PreImageArgs    []string
 	PostImageArgs   []string
@@ -39,6 +40,7 @@ type managedRuntime struct {
 	Readiness       string
 	PublishSpec     string
 	ListenPort      string
+	HostPort        string
 	NetworkName     string
 	ProxyName       string
 	ConfigDir       string
@@ -111,13 +113,14 @@ func resolveManagedRuntime(cfg Config, opts managedRuntimeOptions) (managedRunti
 		readiness = "healthcheck"
 	}
 
-	sanitizedArgs, err := sanitizeManagedArgs(preArgs, zeroDowntime)
+	sanitizedArgs, legacyName, err := sanitizeManagedArgs(preArgs, zeroDowntime)
 	if err != nil {
 		return managedRuntime{}, err
 	}
 
 	publishSpec := ""
 	listenPort := ""
+	hostPort := ""
 	if zeroDowntime {
 		var found bool
 		sanitizedArgs, publishSpec, listenPort, found, err = extractPublishSpec(sanitizedArgs)
@@ -127,11 +130,29 @@ func resolveManagedRuntime(cfg Config, opts managedRuntimeOptions) (managedRunti
 		if !found && autoPort {
 			if port := strings.TrimSpace(envContent["PORT"]); port != "" {
 				publishSpec = fmt.Sprintf("%s:%s", port, port)
+				hostPort = port
 				listenPort = port
 			}
 		}
 		if listenPort == "" {
 			return managedRuntime{}, fmt.Errorf("zero-downtime mode requires either PORT in runtime env or an explicit TCP publish flag")
+		}
+		if hostPort == "" && publishSpec != "" {
+			hostPort, err = hostPortFromPublishSpec(publishSpec)
+			if err != nil {
+				return managedRuntime{}, err
+			}
+		}
+	} else {
+		publishSpec, hostPort, _, _, err = inspectPublishSpec(sanitizedArgs)
+		if err != nil {
+			return managedRuntime{}, err
+		}
+		if publishSpec == "" && autoPort {
+			if port := strings.TrimSpace(envContent["PORT"]); port != "" {
+				publishSpec = fmt.Sprintf("%s:%s", port, port)
+				hostPort = port
+			}
 		}
 	}
 
@@ -139,6 +160,7 @@ func resolveManagedRuntime(cfg Config, opts managedRuntimeOptions) (managedRunti
 
 	return managedRuntime{
 		Name:            name,
+		LegacyName:      legacyName,
 		Image:           resolvedImage,
 		PreImageArgs:    sanitizedArgs,
 		PostImageArgs:   postArgs,
@@ -149,6 +171,7 @@ func resolveManagedRuntime(cfg Config, opts managedRuntimeOptions) (managedRunti
 		Readiness:       readiness,
 		PublishSpec:     publishSpec,
 		ListenPort:      listenPort,
+		HostPort:        hostPort,
 		NetworkName:     fmt.Sprintf("%s-net", sanitizeResourceName(name)),
 		ProxyName:       fmt.Sprintf("%s-proxy", sanitizeResourceName(name)),
 		ConfigDir:       configDir,
@@ -179,8 +202,9 @@ func resolveManagedRunArgs(cfg Config, image string) ([]string, []string, error)
 	return splitArgs(rawArgs), nil, nil
 }
 
-func sanitizeManagedArgs(args []string, zeroDowntime bool) ([]string, error) {
+func sanitizeManagedArgs(args []string, zeroDowntime bool) ([]string, string, error) {
 	out := make([]string, 0, len(args))
+	legacyName := ""
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -188,15 +212,17 @@ func sanitizeManagedArgs(args []string, zeroDowntime bool) ([]string, error) {
 			continue
 		case arg == "--name":
 			if i+1 >= len(args) {
-				return nil, fmt.Errorf("--name requires a value")
+				return nil, "", fmt.Errorf("--name requires a value")
 			}
+			legacyName = args[i+1]
 			i++
 			continue
 		case strings.HasPrefix(arg, "--name="):
+			legacyName = strings.TrimPrefix(arg, "--name=")
 			continue
 		case zeroDowntime && (arg == "--network" || arg == "--net"):
 			if i+1 >= len(args) {
-				return nil, fmt.Errorf("%s requires a value", arg)
+				return nil, "", fmt.Errorf("%s requires a value", arg)
 			}
 			i++
 			continue
@@ -206,7 +232,7 @@ func sanitizeManagedArgs(args []string, zeroDowntime bool) ([]string, error) {
 			out = append(out, arg)
 		}
 	}
-	return out, nil
+	return out, strings.TrimSpace(legacyName), nil
 }
 
 func extractPublishSpec(args []string) ([]string, string, string, bool, error) {
@@ -238,7 +264,7 @@ func extractPublishSpec(args []string) ([]string, string, string, bool, error) {
 			return nil, "", "", false, fmt.Errorf("zero-downtime mode supports exactly one published TCP port")
 		}
 
-		port, err := containerPortFromPublishSpec(spec)
+		_, port, err := publishPortsFromSpec(spec)
 		if err != nil {
 			return nil, "", "", false, err
 		}
@@ -251,7 +277,41 @@ func extractPublishSpec(args []string) ([]string, string, string, bool, error) {
 	return out, publishSpec, listenPort, found, nil
 }
 
-func containerPortFromPublishSpec(spec string) (string, error) {
+func inspectPublishSpec(args []string) (string, string, string, bool, error) {
+	found := false
+	spec := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-p" || arg == "--publish":
+			if i+1 >= len(args) {
+				return "", "", "", false, fmt.Errorf("%s requires a value", arg)
+			}
+			spec = args[i+1]
+			found = true
+			i++
+		case strings.HasPrefix(arg, "--publish="):
+			spec = strings.TrimPrefix(arg, "--publish=")
+			found = true
+		case strings.HasPrefix(arg, "-p") && len(arg) > 2:
+			spec = strings.TrimPrefix(arg, "-p")
+			found = true
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		return "", "", "", false, nil
+	}
+	hostPort, containerPort, err := publishPortsFromSpec(spec)
+	if err != nil {
+		return "", "", "", false, err
+	}
+	return spec, hostPort, containerPort, true, nil
+}
+
+func publishPortsFromSpec(spec string) (string, string, error) {
 	protocol := ""
 	base := spec
 	if before, after, ok := strings.Cut(spec, "/"); ok {
@@ -259,15 +319,30 @@ func containerPortFromPublishSpec(spec string) (string, error) {
 		protocol = after
 	}
 	if protocol != "" && protocol != "tcp" {
-		return "", fmt.Errorf("zero-downtime mode only supports TCP publish flags")
+		return "", "", fmt.Errorf("zero-downtime mode only supports TCP publish flags")
 	}
 
 	parts := strings.Split(base, ":")
-	last := strings.TrimSpace(parts[len(parts)-1])
-	if last == "" {
-		return "", fmt.Errorf("invalid publish spec: %s", spec)
+	containerPort := strings.TrimSpace(parts[len(parts)-1])
+	if containerPort == "" {
+		return "", "", fmt.Errorf("invalid publish spec: %s", spec)
 	}
-	return last, nil
+	hostPort := containerPort
+	if len(parts) >= 2 {
+		hostPort = strings.TrimSpace(parts[len(parts)-2])
+	}
+	if hostPort == "" {
+		return "", "", fmt.Errorf("invalid publish spec: %s", spec)
+	}
+	return hostPort, containerPort, nil
+}
+
+func hostPortFromPublishSpec(spec string) (string, error) {
+	hostPort, _, err := publishPortsFromSpec(spec)
+	if err != nil {
+		return "", err
+	}
+	return hostPort, nil
 }
 
 func managedRunArgs(rt managedRuntime, containerName string, useProxy bool) []string {
@@ -315,7 +390,10 @@ func executeManagedStart(rt managedRuntime) error {
 		return fmt.Errorf("managed app %s is already running", rt.Name)
 	}
 
-	if err := removeManagedContainerByName(rt.Name); err != nil {
+	if err := cleanupAdoptableContainers(rt, false); err != nil {
+		return err
+	}
+	if err := ensureNoPortConflict(rt, false); err != nil {
 		return err
 	}
 	return runDockerCommand(managedRunArgs(rt, rt.Name, false)...)
@@ -341,13 +419,10 @@ func executeManagedRestart(rt managedRuntime, pull bool) error {
 			return err
 		}
 	}
-	if err := stopAndRemoveManagedContainers(rt.Name, dockmanRoleApp); err != nil {
+	if err := cleanupAdoptableContainers(rt, false); err != nil {
 		return err
 	}
-	if err := stopAndRemoveManagedContainers(rt.Name, dockmanRoleProxy); err != nil {
-		return err
-	}
-	if err := removeManagedContainerByName(rt.Name); err != nil {
+	if err := ensureNoPortConflict(rt, false); err != nil {
 		return err
 	}
 	return runDockerCommand(managedRunArgs(rt, rt.Name, false)...)
@@ -368,6 +443,9 @@ func executeManagedReplacement(rt managedRuntime, pull bool) error {
 	if err := ensureDockerNetwork(rt.NetworkName); err != nil {
 		return err
 	}
+	if err := cleanupAdoptableContainers(rt, true); err != nil {
+		return err
+	}
 
 	newRevision := fmt.Sprintf("%s-%d", sanitizeResourceName(rt.Name), time.Now().Unix())
 	currentApp, _ := currentManagedContainer(rt.Name, dockmanRoleApp)
@@ -384,12 +462,23 @@ func executeManagedReplacement(rt managedRuntime, pull bool) error {
 		return err
 	}
 
-	proxyRunning, err := containerExistsByName(rt.ProxyName)
+	proxyState, err := containerStateByName(rt.ProxyName)
 	if err != nil {
 		_ = runDockerCommand("rm", "-f", newRevision)
 		return err
 	}
-	if !proxyRunning {
+	if proxyState == "exited" {
+		if err := runDockerCommand("rm", "-f", rt.ProxyName); err != nil {
+			_ = runDockerCommand("rm", "-f", newRevision)
+			return err
+		}
+		proxyState = ""
+	}
+	if proxyState == "" {
+		if err := ensureNoPortConflict(rt, true); err != nil {
+			_ = runDockerCommand("rm", "-f", newRevision)
+			return err
+		}
 		if err := startProxy(rt); err != nil {
 			_ = runDockerCommand("rm", "-f", newRevision)
 			return err
@@ -500,6 +589,83 @@ func containerExistsByName(name string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+func containerStateByName(name string) (string, error) {
+	out, err := runDockerOutput("ps", "-a", "--filter", fmt.Sprintf("name=^%s$", name), "--format", "{{.State}}")
+	if err != nil {
+		return "", err
+	}
+	lines := strings.Fields(strings.TrimSpace(out))
+	if len(lines) == 0 {
+		return "", nil
+	}
+	return lines[0], nil
+}
+
+func cleanupAdoptableContainers(rt managedRuntime, zeroDowntime bool) error {
+	if err := stopAndRemoveManagedContainers(rt.Name, dockmanRoleApp); err != nil {
+		return err
+	}
+	if !zeroDowntime {
+		if err := stopAndRemoveManagedContainers(rt.Name, dockmanRoleProxy); err != nil {
+			return err
+		}
+	}
+	for _, name := range adoptableNames(rt) {
+		if err := removeManagedContainerByName(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func adoptableNames(rt managedRuntime) []string {
+	names := []string{strings.TrimSpace(rt.Name)}
+	if legacy := strings.TrimSpace(rt.LegacyName); legacy != "" && legacy != rt.Name {
+		names = append(names, legacy)
+	}
+	return names
+}
+
+func ensureNoPortConflict(rt managedRuntime, zeroDowntime bool) error {
+	hostPort := strings.TrimSpace(rt.HostPort)
+	if hostPort == "" {
+		return nil
+	}
+
+	occupiedName, err := conflictingPublishedContainer(hostPort)
+	if err != nil {
+		return err
+	}
+	if occupiedName == "" {
+		return nil
+	}
+
+	allowed := map[string]bool{}
+	for _, name := range adoptableNames(rt) {
+		allowed[name] = true
+	}
+	if zeroDowntime {
+		allowed[rt.ProxyName] = true
+	}
+	if allowed[occupiedName] {
+		return nil
+	}
+
+	return fmt.Errorf("port %s is already allocated by container %s; stop/remove that container or change the published port for %s", hostPort, occupiedName, rt.Name)
+}
+
+func conflictingPublishedContainer(hostPort string) (string, error) {
+	out, err := runDockerOutput("ps", "--filter", fmt.Sprintf("publish=%s", hostPort), "--format", "{{.Names}}")
+	if err != nil {
+		return "", nil
+	}
+	names := strings.Fields(strings.TrimSpace(out))
+	if len(names) == 0 {
+		return "", nil
+	}
+	return names[0], nil
+}
+
 func waitForHealthy(container string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -547,6 +713,7 @@ func printManagedDryRun(action string, rt managedRuntime, opts managedRuntimeOpt
 	switch action {
 	case "start":
 		if rt.ZeroDowntime {
+			lines = append(lines, fmt.Sprintf("Dry run: adoptable container names %s", strings.Join(adoptableNames(rt), ", ")))
 			add("network", "inspect", rt.NetworkName)
 			add("network", "create", rt.NetworkName)
 			add("image", "inspect", "--format", "{{if .Config.Healthcheck}}present{{else}}missing{{end}}", rt.Image)
@@ -554,6 +721,10 @@ func printManagedDryRun(action string, rt managedRuntime, opts managedRuntimeOpt
 			lines = append(lines, fmt.Sprintf("Dry run: wait for %s-<revision> to become healthy", sanitizeResourceName(rt.Name)))
 			add("run", "-d", "--name", rt.ProxyName, "--label", dockmanManagedLabel, "--label", fmt.Sprintf("%s=%s", dockmanAppLabelKey, rt.Name), "--label", fmt.Sprintf("%s=%s", dockmanRoleLabelKey, dockmanRoleProxy), "--network", rt.NetworkName, "-p", rt.PublishSpec, "-v", fmt.Sprintf("%s:/etc/nginx/nginx.conf:ro", rt.ProxyConfigPath), proxyImage)
 		} else {
+			lines = append(lines, fmt.Sprintf("Dry run: adoptable container names %s", strings.Join(adoptableNames(rt), ", ")))
+			if rt.HostPort != "" {
+				add("ps", "--filter", fmt.Sprintf("publish=%s", rt.HostPort), "--format", "{{.Names}}")
+			}
 			add(managedRunArgs(rt, rt.Name, false)...)
 		}
 	case "stop":
@@ -564,6 +735,7 @@ func printManagedDryRun(action string, rt managedRuntime, opts managedRuntimeOpt
 			add("pull", rt.Image)
 		}
 		if rt.ZeroDowntime {
+			lines = append(lines, fmt.Sprintf("Dry run: adoptable container names %s", strings.Join(adoptableNames(rt), ", ")))
 			add("network", "inspect", rt.NetworkName)
 			add("network", "create", rt.NetworkName)
 			add("image", "inspect", "--format", "{{if .Config.Healthcheck}}present{{else}}missing{{end}}", rt.Image)
@@ -574,8 +746,15 @@ func printManagedDryRun(action string, rt managedRuntime, opts managedRuntimeOpt
 			add("exec", rt.ProxyName, "nginx", "-s", "reload")
 			add("rm", "-f", "<old-managed-app-container>")
 		} else {
+			lines = append(lines, fmt.Sprintf("Dry run: adoptable container names %s", strings.Join(adoptableNames(rt), ", ")))
 			add("ps", "-aq", "--filter", fmt.Sprintf("label=%s", dockmanManagedLabel), "--filter", fmt.Sprintf("label=%s=%s", dockmanAppLabelKey, rt.Name), "--filter", fmt.Sprintf("label=%s=%s", dockmanRoleLabelKey, dockmanRoleApp))
-			add("rm", "-f", rt.Name)
+			for _, name := range adoptableNames(rt) {
+				add("ps", "-aq", "--filter", fmt.Sprintf("name=^%s$", name))
+				add("rm", "-f", name)
+			}
+			if rt.HostPort != "" {
+				add("ps", "--filter", fmt.Sprintf("publish=%s", rt.HostPort), "--format", "{{.Names}}")
+			}
 			add(managedRunArgs(rt, rt.Name, false)...)
 		}
 	default:

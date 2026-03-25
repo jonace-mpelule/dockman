@@ -33,7 +33,7 @@ func main() {
 		return
 	}
 	if options.Version || mode == "version" {
-		fmt.Printf("dockman %s\n", version)
+		printVersion()
 		return
 	}
 
@@ -44,10 +44,14 @@ func main() {
 
 	switch mode {
 	case "init":
-		if err := writeDefaultConfig(configPath, options.Profile); err != nil {
+		if err := runInit(configPath, options.Profile, options); err != nil {
+			if errors.Is(err, errInitCancelled) {
+				fmt.Println("Init cancelled.")
+				return
+			}
 			log.Fatal(err)
 		}
-		fmt.Printf("Created %s\n", configPath)
+		printInitSuccess(configPath, options.Profile)
 		return
 	case "doctor":
 		if err := doctorConfig(configPath, options.DryRun); err != nil {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -102,49 +103,98 @@ func loadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
-func writeDefaultConfig(path string, profile string) error {
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("config already exists at %s", path)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-
+func defaultConfig(profile string) Config {
 	defaultAutoPort := true
 	envFile := defaultEnvFile
+	projectName := currentProjectName()
 	if profile != "" {
 		envFile = fmt.Sprintf(".env.%s", profile)
 	}
 
-	cfg := Config{
+	return Config{
 		SchemaVersion: currentConfigVersion,
-		Image:         "my-image",
+		Image:         projectName,
 		Run: RunConfig{
 			EnvFile:      envFile,
 			AutoPort:     &defaultAutoPort,
 			Args:         "--rm",
-			Name:         "my-app",
+			Name:         projectName,
 			ZeroDowntime: boolPtr(false),
 			Readiness:    "healthcheck",
 		},
 		Build: BuildConfig{
 			Context:    ".",
 			Dockerfile: "Dockerfile",
-			Tag:        "my-image",
+			Tag:        projectName,
 			BuildKit:   boolPtr(true),
 		},
 	}
+}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+func currentProjectName() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "app"
+	}
+	return sanitizeProjectName(filepath.Base(wd))
+}
+
+func sanitizeProjectName(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return "app"
+	}
+
+	var b strings.Builder
+	lastDash := false
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+
+	sanitized := strings.Trim(b.String(), "-_.")
+	if sanitized == "" {
+		return "app"
+	}
+	return sanitized
+}
+
+func configExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	return false, nil
+}
+
+func writeConfig(path string, cfg Config, overwrite bool) error {
+	exists, err := configExists(path)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
+	if exists && !overwrite {
+		return fmt.Errorf("config already exists at %s", path)
+	}
 
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	data, err := marshalConfig(cfg)
+	if err != nil {
 		return err
 	}
 
-	return nil
+	return os.WriteFile(path, data, 0o644)
+}
+
+func writeDefaultConfig(path string, profile string) error {
+	return writeConfig(path, defaultConfig(profile), false)
 }
 
 func configPathForProfile(profile string) string {
