@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-VERSION="${VERSION:-v1.3.0}"
+VERSION="v1.4.0"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 
